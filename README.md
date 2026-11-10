@@ -66,6 +66,20 @@ Cloudflare Vite plugin 的本地 dev server 对深层 SPA 直达路由可能和�
 pnpm deploy
 ```
 
+`pnpm deploy` 等价于 `vite build && wrangler deploy`。`vite build` 会在 `dist/hexo_blog_admin/wrangler.json` 生成一份输出配置，并写 `.wrangler/deploy/config.json` 让后续 `wrangler deploy` 自动重定向到它；所以不要在 `vite build` 和 `wrangler deploy` 之间删掉 `.wrangler/`，否则 `wrangler deploy` 会拿根 `wrangler.jsonc` 直接报 `assets property is missing the required directory property`。
+
+两个实际踩过的坑：
+
+- **不要在 `wrangler.jsonc` 里声明 `r2_buckets`。** 只写 binding 名（没有 bucket 名）时 `wrangler deploy` 会把它当成「需要自动创建的资源」，去调 `POST /accounts/<id>/r2/buckets`，没开通 R2 订阅的账号会直接失败：`code: 10042 Please enable R2`，整次部署中断。要用 R2 请在 Dashboard 的 Worker Bindings 里手动加 `BLOG_ASSET_CACHE`。
+- **`workers_dev` / `preview_urls` 显式写 `false`。** 不写时 `wrangler deploy` 会默认启用 `https://<worker>.<account>.workers.dev` 和 Preview URL，这会绕过 Worker 前面的 Cloudflare Access 策略，把后台暴露在公网域名上。本项目已写入 `false`。
+
+部署后自检：
+
+```bash
+curl -s https://<你的后台域名>/api/health
+curl -s https://<你的后台域名>/api/setup/status   # 期望 configured: true
+```
+
 ## GitHub Token
 
 建议使用 Fine-grained Personal Access Token，并且只授权选中的博客仓库。

@@ -66,6 +66,20 @@ Deploy through Wrangler:
 pnpm deploy
 ```
 
+`pnpm deploy` is `vite build && wrangler deploy`. `vite build` writes an output config to `dist/hexo_blog_admin/wrangler.json` plus `.wrangler/deploy/config.json`, which makes the following `wrangler deploy` redirect to it. So do not delete `.wrangler/` between the build and the deploy, or `wrangler deploy` will use the root `wrangler.jsonc` and fail with `assets property is missing the required directory property`.
+
+Two pitfalls worth knowing:
+
+- **Do not declare `r2_buckets` in `wrangler.jsonc`.** A binding given only by name (no bucket) makes `wrangler deploy` treat it as a resource to auto-provision and call `POST /accounts/<id>/r2/buckets`; on an account without an R2 subscription the deploy dies with `code: 10042 Please enable R2` and the whole deployment aborts. If you want R2, add the `BLOG_ASSET_CACHE` binding manually in the dashboard.
+- **Set `workers_dev` / `preview_urls` to `false` explicitly.** When unset, `wrangler deploy` enables `https://<worker>.<account>.workers.dev` and Preview URLs by default, which bypasses any Cloudflare Access policy in front of the Worker and exposes the admin panel on a public hostname. This repo pins both to `false`.
+
+Post-deploy self check:
+
+```bash
+curl -s https://<your-admin-host>/api/health
+curl -s https://<your-admin-host>/api/setup/status   # expect configured: true
+```
+
 ## GitHub Token
 
 Use a fine-grained personal access token scoped to only the selected blog repository.

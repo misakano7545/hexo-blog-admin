@@ -4,6 +4,11 @@
 	"compatibility_date": "2026-04-30",
 	"main": "src/worker/index.ts",
 	"keep_vars": true,
+	// The panel is served through the admin.misakano.cn custom domain behind
+	// Cloudflare Access. Without these two flags `wrangler deploy` silently
+	// re-enables the public workers.dev/preview URLs, which bypass Access.
+	"workers_dev": false,
+	"preview_urls": false,
 	// Route example:
 	// "routes": [
 	//   { "pattern": "admin.blog.plfjy.top/*", "zone_name": "plfjy.top" }
@@ -23,12 +28,11 @@
 			// Bind this name to your own D1 namespace in Cloudflare.
 		}
 	],
-	"r2_buckets": [
-		{
-			"binding": "BLOG_ASSET_CACHE"
-			// Bind this name to your own R2 bucket in Cloudflare.
-			// Optional: draft image staging falls back to BLOG_ADMIN_KV when this
-			// binding is absent, so an account without an R2 subscription works.
-		}
-	]
+	// R2 is deliberately NOT declared here. Declaring an R2 binding without a
+	// bucket name makes `wrangler deploy` try to auto-provision the bucket,
+	// which fails with `code: 10042 Please enable R2` on any account without an
+	// R2 subscription — so the whole deploy broke even though draft images can
+	// fall back to BLOG_ADMIN_KV. Add BLOG_ASSET_CACHE manually as a Worker
+	// binding in the Cloudflare dashboard if you do want R2.
+	// "r2_buckets": [{ "binding": "BLOG_ASSET_CACHE" }]
 }
