@@ -120,7 +120,8 @@ BLOG_ASSET_PUBLIC_URL=https://blog-admin-cache.plfjy.top
 
 KV 保存：
 
-- `auth:user:<username>`：后台普通用户密码哈希。
+- `auth:user:<username>`：后台普通用户密码哈希（`salt` + `passwordHash`，改密码时原地更新）。
+- `auth:admin:builtin`：内置管理员在前端改过的密码（`salt` + `passwordHash`）。存在时和 `ADMIN_PASSWORD` secret 同时有效，secret 优先，因此它不会困住管理员。
 - `config:adminBackgroundUrl`：后台背景图 URL。
 
 `admin-index.json` 不再写入 Worker KV；`/api/index` 和 `/api/posts/tree` 每次直接读取博客公开站点。
@@ -210,6 +211,8 @@ KV 保存：
 - `GET /api/users`
 - `POST /api/users`
 - `DELETE /api/users/:username`
+- `PUT /api/auth/password`：当前登录账号改密码，body `{ currentPassword, newPassword }`；失败返回 `INVALID_CURRENT_PASSWORD` / `WEAK_PASSWORD`。
+- `PUT /api/users/:username/password`：管理员重置其他普通账号密码，body `{ newPassword }`；非管理员 403（`FORBIDDEN`），目标是内置管理员时 400（`BUILT_IN_ADMIN`）。
 
 配置与状态：
 

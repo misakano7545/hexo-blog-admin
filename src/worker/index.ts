@@ -1,7 +1,16 @@
 import type { HealthResponse } from '../shared/apiTypes'
 import type { WorkerEnv } from './env'
 import { handleAssetBlob, handleAssetCache, handleAssetRename, handleAssets } from './routes/assetRoutes'
-import { handleAuthStatus, handleCreateUser, handleDeleteUser, handleListUsers, handleLogin, handleLogout } from './routes/authRoutes'
+import {
+  handleAuthStatus,
+  handleChangePassword,
+  handleCreateUser,
+  handleDeleteUser,
+  handleListUsers,
+  handleLogin,
+  handleLogout,
+  handleResetUserPassword,
+} from './routes/authRoutes'
 import { handleAdminUiSettings, handlePublicConfig, handleSetupStatus, handleUpdateAdminUiSettings } from './routes/configRoutes'
 import {
   handleCustomizeFile,
@@ -111,6 +120,11 @@ async function handleApiRequest(request: Request, env: WorkerEnv, pathname: stri
   if (pathname === '/api/settings/ui' && request.method === 'PUT') return handleUpdateAdminUiSettings(env, request)
   if (pathname === '/api/users' && request.method === 'GET') return handleListUsers(env)
   if (pathname === '/api/users' && request.method === 'POST') return handleCreateUser(env, request)
+  if (pathname === '/api/auth/password' && request.method === 'PUT') return handleChangePassword(request, env)
+  if (pathname.startsWith('/api/users/') && pathname.endsWith('/password') && request.method === 'PUT') {
+    const username = decodeURIComponent(pathname.slice('/api/users/'.length, -'/password'.length))
+    return handleResetUserPassword(request, env, username)
+  }
   if (pathname.startsWith('/api/users/') && request.method === 'DELETE') {
     return handleDeleteUser(env, decodeURIComponent(pathname.slice('/api/users/'.length)))
   }

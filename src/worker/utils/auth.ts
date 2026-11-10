@@ -42,6 +42,28 @@ function userKey(username: string) {
   return `${userPrefix}${username.toLowerCase()}`
 }
 
+// 内置管理员的密码原本只来自 Worker Secret `ADMIN_PASSWORD`。前端自助改密码时把加盐哈希写进这个 KV key，
+// 这样改密码不需要重新执行 `wrangler secret put`；Secret 仍然优先命中，忘记新密码时它还是恢复入口。
+const builtInPasswordKey = 'auth:admin:builtin'
+
+type StoredPassword = {
+  salt: string
+  passwordHash: string
+  updatedAt: string
+}
+
+const minPasswordLength = 8
+const maxPasswordLength = 128
+
+export type PasswordUpdateError = 'INVALID_CURRENT_PASSWORD' | 'USER_NOT_FOUND' | 'WEAK_PASSWORD' | 'BUILT_IN_ADMIN'
+
+export type PasswordUpdateResult = { ok: true } | { ok: false; error: PasswordUpdateError }
+
+export function isStrongPassword(password: string) {
+  if (password.length < minPasswordLength || password.length > maxPasswordLength) return false
+  return /[A-Za-z]/.test(password) && /[0-9]/.test(password)
+}
+
 function publicUser(user: StoredUser, builtIn = false): AuthUser {
   return {
     username: user.username,
@@ -91,9 +113,16 @@ export async function isAuthenticated(request: Request, env: WorkerEnv) {
   return Boolean(await getSessionUser(request, env))
 }
 
+async function verifyBuiltInPassword(env: WorkerEnv, password: string) {
+  if (env.ADMIN_PASSWORD && timingSafeEqual(password, env.ADMIN_PASSWORD)) return true
+  const stored = await env.BLOG_ADMIN_KV?.get<StoredPassword>(builtInPasswordKey, 'json')
+  if (!stored) return false
+  return timingSafeEqual(await hashPassword(password, stored.salt), stored.passwordHash)
+}
+
 export async function verifyLogin(env: WorkerEnv, username: string, password: string): Promise<AuthUser | null> {
-  if (username === env.ADMIN_USERNAME && timingSafeEqual(password, env.ADMIN_PASSWORD ?? '')) {
-    return { username, role: 'admin', builtIn: true }
+  if (username === env.ADMIN_USERNAME) {
+    return (await verifyBuiltInPassword(env, password)) ? { username, role: 'admin', builtIn: true } : null
   }
 
   const stored = await env.BLOG_ADMIN_KV?.get<StoredUser>(userKey(username), 'json')
@@ -131,4 +160,64 @@ export async function deleteUser(env: WorkerEnv, username: string): Promise<{ de
   if (username === env.ADMIN_USERNAME) throw new Error('Cannot delete built-in admin')
   await env.BLOG_ADMIN_KV?.delete(userKey(username))
   return { deleted: true }
+}
+
+export async function changePassword(
+  env: WorkerEnv,
+  user: AuthUser,
+  currentPassword: string,
+  newPassword: string,
+): Promise<PasswordUpdateResult> {
+  if (!isStrongPassword(newPassword)) return { ok: false, error: 'WEAK_PASSWORD' }
+  if (!env.BLOG_ADMIN_KV) return { ok: false, error: 'USER_NOT_FOUND' }
+
+  if (user.builtIn) {
+    if (!(await verifyBuiltInPassword(env, currentPassword))) return { ok: false, error: 'INVALID_CURRENT_PASSWORD' }
+    const salt = crypto.randomUUID()
+    const record: StoredPassword = {
+      salt,
+      passwordHash: await hashPassword(newPassword, salt),
+      updatedAt: new Date().toISOString(),
+    }
+    await env.BLOG_ADMIN_KV.put(builtInPasswordKey, JSON.stringify(record))
+    return { ok: true }
+  }
+
+  const stored = await env.BLOG_ADMIN_KV.get<StoredUser>(userKey(user.username), 'json')
+  if (!stored) return { ok: false, error: 'USER_NOT_FOUND' }
+  if (!timingSafeEqual(await hashPassword(currentPassword, stored.salt), stored.passwordHash)) {
+    return { ok: false, error: 'INVALID_CURRENT_PASSWORD' }
+  }
+
+  const salt = crypto.randomUUID()
+  const updated: StoredUser = {
+    ...stored,
+    salt,
+    passwordHash: await hashPassword(newPassword, salt),
+  }
+  await env.BLOG_ADMIN_KV.put(userKey(stored.username), JSON.stringify(updated))
+  return { ok: true }
+}
+
+export async function resetUserPassword(
+  env: WorkerEnv,
+  username: string,
+  newPassword: string,
+): Promise<PasswordUpdateResult> {
+  const normalized = username.trim()
+  if (normalized === env.ADMIN_USERNAME) return { ok: false, error: 'BUILT_IN_ADMIN' }
+  if (!isStrongPassword(newPassword)) return { ok: false, error: 'WEAK_PASSWORD' }
+  if (!env.BLOG_ADMIN_KV) return { ok: false, error: 'USER_NOT_FOUND' }
+
+  const stored = await env.BLOG_ADMIN_KV.get<StoredUser>(userKey(normalized), 'json')
+  if (!stored) return { ok: false, error: 'USER_NOT_FOUND' }
+
+  const salt = crypto.randomUUID()
+  const updated: StoredUser = {
+    ...stored,
+    salt,
+    passwordHash: await hashPassword(newPassword, salt),
+  }
+  await env.BLOG_ADMIN_KV.put(userKey(stored.username), JSON.stringify(updated))
+  return { ok: true }
 }

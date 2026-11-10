@@ -126,6 +126,15 @@ BLOG_ASSET_PUBLIC_URL=https://your-r2-public-domain
 
 `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `GITHUB_TOKEN` are secrets and are not shown in the setup status. `ADMIN_USERNAME` is the built-in admin account. After logging in, add regular accounts from Settings; regular account passwords are stored in KV as salted hashes.
 
+Once signed in, the Settings page offers a **Change password** card:
+
+- Regular accounts: the current password is verified, then the salt and hash in `auth:user:<username>` are rewritten and take effect immediately.
+- Built-in admin: after verifying the current password, the new salt and hash are written to the KV key `auth:admin:builtin`, so no `wrangler secret put ADMIN_PASSWORD` is required.
+- The `ADMIN_PASSWORD` secret always matches first, so a forgotten new password can still be recovered with the secret.
+- Admins can also **Reset password** for other regular accounts from the account list (the built-in admin is excluded so it never fights the secret).
+- New passwords must be 8-128 characters and contain both letters and digits.
+- Changing a password does not sign out other devices: the session cookie only signs the username and expiry.
+
 The compatibility date is pinned to `2026-04-30`, the latest date supported by the installed local Miniflare runtime; bump it after upgrading Cloudflare tooling if needed.
 
 ## KV, D1, And R2 Bindings
@@ -371,6 +380,7 @@ ADMIN_INDEX_PATH=/admin-index.json
 - Setup gate for missing Worker variables, secrets, KV, D1, and R2 bindings.
 - Dedicated admin login page backed by Worker Secrets `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
 - Account management in Settings; regular account passwords are stored in KV as salted hashes.
+- Change password / reset password in Settings: the built-in admin's new password lands in KV (the secret stays usable for recovery), regular accounts have their salt and hash rewritten in place.
 - Shared TypeScript API/domain types.
 - Hexo post path utility functions for folder-based post IDs and post-folder assets.
 - Reads `admin-index.json` from the blog site and shows the real post tree, site summary, and Customize capability summary.

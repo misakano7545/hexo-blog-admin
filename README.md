@@ -126,6 +126,15 @@ BLOG_ASSET_PUBLIC_URL=https://blog-admin-cache.plfjy.top
 
 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和 `GITHUB_TOKEN` 是 secret，不会显示在配置状态里。`ADMIN_USERNAME` 对应内置管理员账号；登录后台后可以在设置页新增普通账号，普通账号密码会以加盐哈希保存到 KV。
 
+登录后可以在设置页「修改密码」自助改密码：
+
+- 普通账号：校验当前密码后重写 `auth:user:<username>` 里的盐和哈希，改完立即生效。
+- 内置管理员：校验当前密码后把新密码的盐和哈希写入 KV 的 `auth:admin:builtin`，不需要重新执行 `wrangler secret put ADMIN_PASSWORD`。
+- `ADMIN_PASSWORD` secret 始终优先命中，所以忘记新密码时仍可用 secret 登录，改完再重新设置。
+- 管理员还可以在账号列表里直接「重置密码」其他普通账号（内置管理员不支持，避免和 secret 冲突）。
+- 新密码要求 8-128 位，并同时包含字母和数字。
+- 修改密码不会让已登录的其他设备立即下线：session cookie 只签名用户名和过期时间。
+
 当前兼容日期固定为 `2026-04-30`，这是已安装本地 Miniflare 运行时支持的最新日期；升级 Cloudflare 工具链后可以按需调高。
 
 ## KV、D1 和 R2 绑定
@@ -406,6 +415,7 @@ ADMIN_INDEX_PATH=/admin-index.json
 - 缺少 Worker variables、secrets、KV、D1、R2 bindings 时的 Setup Gate。
 - 独立管理员登录页，内置管理员账号来自 Worker Secret `ADMIN_USERNAME` / `ADMIN_PASSWORD`。
 - 设置页账号管理，新增账号的密码以加盐哈希保存到 KV。
+- 设置页修改密码 / 重置密码：内置管理员的新密码写入 KV（secret 仍可恢复），普通账号原地更新盐和哈希。
 - 前后端复用的 TypeScript API 和领域类型。
 - 面向文件夹分类文章和文章资源目录的 Hexo 路径工具函数。
 - 从博客站点读取 `admin-index.json`，展示真实文章树、站点摘要、Hexo 设置和主题设置能力摘要。
