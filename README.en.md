@@ -11,14 +11,14 @@ The intended data model is:
 | Published Markdown posts | GitHub repository |
 | Published image assets | GitHub repository |
 | Draft Markdown | Cloudflare D1 |
-| Temporary draft images | Cloudflare R2 |
+| Temporary draft images | Cloudflare R2, or the `BLOG_ADMIN_KV` namespace when R2 is not bound |
 | Draft image metadata | Cloudflare D1 |
 | Runtime configuration | Worker variables / KV |
 | GitHub token | Worker secret |
 | Build and deploy | GitHub Actions |
 | Public admin index summary | Blog build artifact `admin-index.json` |
 
-R2 is only a temporary draft cache, not the final image host.
+R2 is only a temporary draft cache, not the final image host; draft images live there (or in KV) just until they are published into the blog repository.
 
 ## Install
 
@@ -167,7 +167,7 @@ pnpm wrangler d1 migrations apply hexo-blog-admin
 
 If automatic initialization fails, the setup page shows `BLOG_ADMIN_DB_SCHEMA`. Check Worker logs and D1 binding permissions, then refresh the page.
 
-Create an R2 bucket for temporary draft assets. The bucket name can be anything, but the Worker binding name must be `BLOG_ASSET_CACHE`:
+Temporary draft images can live in R2 or stay in KV, see the next section. To create an R2 bucket, the bucket name can be anything, but the Worker binding name must be `BLOG_ASSET_CACHE`:
 
 ```bash
 pnpm wrangler r2 bucket create hexo-blog-admin-cache
@@ -178,18 +178,44 @@ If this R2 bucket has a public custom domain, you can additionally set `BLOG_ASS
 Bind them as:
 
 ```txt
-BLOG_ADMIN_KV
-BLOG_ADMIN_DB
-BLOG_ASSET_CACHE
+BLOG_ADMIN_KV      required
+BLOG_ADMIN_DB      required
+BLOG_ASSET_CACHE   optional (draft images fall back to BLOG_ADMIN_KV)
 ```
+
+## Draft Image Storage: R2 Or KV
+
+Draft images only sit in the drafts area until you publish; publishing commits them into the blog GitHub repository as real assets. So this path needs no long-term storage. R2 requires enabling the R2 subscription and attaching a payment method to the Cloudflare account, so a free account can skip it entirely:
+
+- With `BLOG_ASSET_CACHE` bound: image blobs go to R2 and `BLOG_ADMIN_KV` holds only accounts and UI config.
+- Without `BLOG_ASSET_CACHE`: blobs fall back to the already-required `BLOG_ADMIN_KV` namespace, under the key prefix `asset:<r2_key>`, with the raw image bytes as the value and `contentType` in KV metadata. R2 always wins when both are bound.
+- At least one of them must exist: with neither `BLOG_ASSET_CACHE` nor `BLOG_ADMIN_KV` bound, the setup page reports a missing `BLOG_ASSET_CACHE` and the admin UI stays blocked.
+
+Hard limits on the KV path (official Workers KV quotas; the free plan resets daily at 00:00 UTC):
+
+```txt
+value size        25 MiB
+writes            1,000/day (each image upload is one write)
+deletes           1,000/day (each draft image delete is one)
+lists             1,000/day (each refresh of the draft image list is one)
+total storage     1 GB per account
+```
+
+Consequences:
+
+- A single image above 25 MiB fails outright: KV rejects the `put` instead of truncating.
+- Bulk uploads hit the write quota first, and a large backlog of draft images hits the 1 GB storage cap; once a quota is exhausted that operation fails for the rest of the day, so either wait for the reset or bind R2.
+- Exceeding any one quota fails that operation type for the day, and operations from `wrangler` or the Dashboard count towards it too.
+- The frontend asks whether to compress images above 500 KiB into WebP (longest edge 2560) and also allows uploading the original. On the KV path prefer compressing: it saves quota and stays clear of the 25 MiB cap.
+- In both modes draft images are served through the Worker `/api/assets/blob` endpoint; `BLOG_ASSET_PUBLIC_URL` only helps with an R2 custom domain, the KV path has no public URL.
 
 `wrangler.jsonc` only declares the binding name. It does not commit a placeholder `database_id` or `database_name`, because CI deploys can treat placeholder resource config as invalid. Bind the D1 database manually in the Cloudflare Dashboard. The binding name must still be `BLOG_ADMIN_DB`.
 
 If your deployment flow requires an explicit id in `wrangler.jsonc`, use the real `database_id` returned by `pnpm wrangler d1 create hexo-blog-admin`; do not keep a placeholder value.
 
-Bind your own KV/R2 resources to the names above in the Cloudflare Dashboard. KV only keeps admin-index cache, session/auth state, and small configuration cache entries; draft Markdown and draft image metadata are stored in D1, while R2 continues to store temporary draft image objects.
+Bind your own KV/R2 resources to the names above in the Cloudflare Dashboard. KV keeps session/auth state, small configuration cache entries, and (when R2 is unbound) draft image blobs; draft Markdown and draft image metadata are stored in D1.
 
-KV/D1/R2 bindings are required too: without `BLOG_ADMIN_KV`, `BLOG_ADMIN_DB`, or `BLOG_ASSET_CACHE`, the admin UI will remain blocked.
+`BLOG_ADMIN_KV` and `BLOG_ADMIN_DB` are required: without them the admin UI stays blocked. `BLOG_ASSET_CACHE` is optional; when missing, draft images fall back to `BLOG_ADMIN_KV` (see the limits above).
 
 Recommended deployment order:
 
@@ -377,7 +403,7 @@ ADMIN_INDEX_PATH=/admin-index.json
   - `/api/drafts`
   - `/api/drafts/:id`
   - `/api/drafts/publish`
-- Setup gate for missing Worker variables, secrets, KV, D1, and R2 bindings.
+- Setup gate for missing Worker variables, secrets, KV and D1 bindings (plus a missing draft image store when neither R2 nor KV is bound).
 - Dedicated admin login page backed by Worker Secrets `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
 - Account management in Settings; regular account passwords are stored in KV as salted hashes.
 - Change password / reset password in Settings: the built-in admin's new password lands in KV (the secret stays usable for recovery), regular accounts have their salt and hash rewritten in place.
@@ -387,7 +413,7 @@ ADMIN_INDEX_PATH=/admin-index.json
 - Reads post Markdown through the GitHub REST API.
 - Creates, saves, reads, and deletes drafts in D1.
 - Provides live Markdown preview for post and draft editing, including `==highlight==` syntax.
-- Uploads images from the Markdown editor into the R2 temporary cache and inserts the final Markdown image path.
-- Manages draft image cache entries, including listing and deleting temporary R2 images.
-- Publishes both Markdown and cached R2 draft images to the blog repository.
+- Uploads images from the Markdown editor into the temporary draft cache (R2, or KV when R2 is unbound) and inserts the final Markdown image path.
+- Manages draft image cache entries, including listing and deleting temporary images.
+- Publishes both Markdown and cached draft images to the blog repository.
 - Publishes drafts to the blog repository through a GitHub batch commit.

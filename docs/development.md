@@ -115,14 +115,17 @@ BLOG_ASSET_PUBLIC_URL=https://blog-admin-cache.plfjy.top
 草稿数据存在 Cloudflare：
 
 - `drafts` 表：草稿 ID、`relative_id`、标题、Markdown、创建/更新时间。
-- `draft_assets` 表：草稿图片 metadata，包括 R2 key、Markdown 引用路径和最终 GitHub repo path。
-- R2：保存草稿图片 blob。
+- `draft_assets` 表：草稿图片 metadata，包括存储 key、Markdown 引用路径和最终 GitHub repo path。
+- 草稿图片 blob：绑定了 `BLOG_ASSET_CACHE` 时存 R2；没有绑定时回落到 `BLOG_ADMIN_KV`，见下面的 KV key。
+
+`src/worker/services/storage/assetBlobStore.ts` 是这层存储的唯一入口（`put/get/delete`），路由和 D1 清理都走它，不要在业务代码里直接调 `env.BLOG_ASSET_CACHE`。R2 需要账号开通订阅，免费账号可以完全跳过 R2 只靠 KV；两种模式都在 `/api/assets/blob` 后面读，所以上层无感。
 
 KV 保存：
 
 - `auth:user:<username>`：后台普通用户密码哈希（`salt` + `passwordHash`，改密码时原地更新）。
 - `auth:admin:builtin`：内置管理员在前端改过的密码（`salt` + `passwordHash`）。存在时和 `ADMIN_PASSWORD` secret 同时有效，secret 优先，因此它不会困住管理员。
 - `config:adminBackgroundUrl`：后台背景图 URL。
+- `asset:<r2_key>`：没有绑定 R2 时的草稿图片 blob（原始字节 + `contentType` metadata）。KV 限制 25 MiB/value、1 GB/账号，免费版 1,000 次写入 / 1,000 次删除 / 1,000 次列表每天，批量上传会先撞写入配额。
 
 `admin-index.json` 不再写入 Worker KV；`/api/index` 和 `/api/posts/tree` 每次直接读取博客公开站点。
 

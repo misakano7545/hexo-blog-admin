@@ -11,14 +11,14 @@
 | 正式 Markdown 文章 | GitHub 仓库 |
 | 正式图片资源 | GitHub 仓库 |
 | 草稿 Markdown | Cloudflare D1 |
-| 草稿图片临时缓存 | Cloudflare R2 |
+| 草稿图片临时缓存 | Cloudflare R2，未绑 R2 时用 `BLOG_ADMIN_KV` |
 | 草稿图片 metadata | Cloudflare D1 |
 | 运行时配置 | Worker Variables / KV |
 | GitHub Token | Worker Secret |
 | 构建和部署 | GitHub Actions |
 | 后台公开索引摘要 | 博客构建产物 `admin-index.json` |
 
-R2 只作为草稿临时缓存，不作为正式图床。
+R2 只作为草稿临时缓存，不作为正式图床；草稿图片只是在发布前临时停放，发布时会提交到博客仓库。
 
 ## 安装
 
@@ -167,7 +167,7 @@ pnpm wrangler d1 migrations apply hexo-blog-admin
 
 如果自动初始化失败，setup 页面会显示 `BLOG_ADMIN_DB_SCHEMA`，请查看 Worker 日志和 D1 绑定权限后刷新重试。
 
-创建用于草稿图片临时缓存的 R2 bucket。bucket 名字可以自定，但 Worker binding 名必须是 `BLOG_ASSET_CACHE`：
+草稿图片临时缓存可以放 R2，也可以留在 KV 里，见下一节。要建 R2 bucket 时名字可以自定，但 Worker binding 名必须是 `BLOG_ASSET_CACHE`：
 
 ```bash
 pnpm wrangler r2 bucket create hexo-blog-admin-cache
@@ -178,18 +178,44 @@ pnpm wrangler r2 bucket create hexo-blog-admin-cache
 绑定名称如下：
 
 ```txt
-BLOG_ADMIN_KV
-BLOG_ADMIN_DB
-BLOG_ASSET_CACHE
+BLOG_ADMIN_KV      必需
+BLOG_ADMIN_DB      必需
+BLOG_ASSET_CACHE   可选（R2 未绑定时草稿图片落在 BLOG_ADMIN_KV）
 ```
+
+## 草稿图片存储：R2 或 KV
+
+草稿图片只在「草稿箱」里临时停放，发布时会作为正式资源提交到博客 GitHub 仓库，所以这里不需要长期存储。R2 需要给 Cloudflare 账号开通 R2 订阅并绑定付款方式，免费账号如果不想开，可以直接跳过 R2：
+
+- 绑定了 `BLOG_ASSET_CACHE`：图片 blob 存 R2，`BLOG_ADMIN_KV` 只放账号和 UI 配置。
+- 没有绑定 `BLOG_ASSET_CACHE`：自动回落到已经必需的 `BLOG_ADMIN_KV`，key 前缀为 `asset:<r2_key>`，值直接是图片字节，`contentType` 放在 KV metadata 里。R2 始终优先，两者都绑定时不会用 KV。
+- 仍然要求至少存在其中一个 binding：`BLOG_ASSET_CACHE`、`BLOG_ADMIN_KV` 都没有时 setup 页会提示缺 `BLOG_ASSET_CACHE`，后台不进主界面。
+
+KV 这条路径的硬限制（Cloudflare Workers KV 官方配额，免费版每天 00:00 UTC 重置）：
+
+```txt
+单个 value      25 MiB
+写入           1,000 次/天（每次上传图片算 1 次）
+删除           1,000 次/天（每次删除草稿图片算 1 次）
+列表           1,000 次/天（草稿图片列表页每刷新一次算 1 次）
+总存储          1 GB/账号
+```
+
+所以：
+
+- 超过 25 MiB 的单张图片会直接失败，KV 会在 `put` 时就报错，不是静默截断。
+- 大批量上传会先撞写入配额，攒很多草稿图片会撞 1 GB 存储上限；配额用完后当天的上传、删除和发布都会报错，需要等配额重置或改成绑定 R2。
+- 任何一项配额超限后，同一类操作当天都会失败，`wrangler` 和 Dashboard 里的操作也算配额。
+- 前端对超过 500 KiB 的图片会弹窗询问是否压缩成 WebP（最长边 2560），也可以选择上传原图。用 KV 路径时建议保持压缩，既省配额也远离 25 MiB 上限。
+- 两种模式下草稿图片都通过 Worker 的 `/api/assets/blob` 读取；`BLOG_ASSET_PUBLIC_URL` 只在有 R2 custom domain 时才有意义，KV 路径没有公开 URL。
 
 `wrangler.jsonc` 只声明代码需要的 binding 名，不提交占位 `database_id` 或 `database_name`，避免 CI 部署时把占位值当成无效资源配置。请在 Cloudflare Dashboard 的 Worker Bindings 里手动绑定 D1 database；Dashboard 手动绑定时 binding 名必须是 `BLOG_ADMIN_DB`。
 
 如果你的部署方式要求在 `wrangler.jsonc` 中显式写入 id，请使用 `pnpm wrangler d1 create hexo-blog-admin` 返回的真实 `database_id`，不要保留占位值。
 
-请在 Cloudflare Dashboard 的 Worker Bindings 里把你自己的 KV/R2 资源绑定到上面的名称。KV 保留 session/auth 状态和少量配置缓存；`admin-index.json` 每次从博客公开站点直接读取。草稿正文和草稿图片 metadata 存在 D1，R2 继续保存草稿图片临时对象。
+请在 Cloudflare Dashboard 的 Worker Bindings 里把你自己的 KV/R2 资源绑定到上面的名称。KV 保留 session/auth 状态、少量配置缓存和（未绑 R2 时的）草稿图片 blob；`admin-index.json` 每次从博客公开站点直接读取。草稿正文和草稿图片 metadata 存在 D1。
 
-KV/D1/R2 binding 同样是必需项：没有绑定 `BLOG_ADMIN_KV`、`BLOG_ADMIN_DB` 或 `BLOG_ASSET_CACHE` 时，后台不会进入主界面。
+`BLOG_ADMIN_KV` 和 `BLOG_ADMIN_DB` 是必需项：没有绑定时后台不会进入主界面。`BLOG_ASSET_CACHE` 不是必需项，缺省时草稿图片回落到 `BLOG_ADMIN_KV`（限制见上一节）。
 
 推荐部署顺序：
 
@@ -412,7 +438,7 @@ ADMIN_INDEX_PATH=/admin-index.json
   - `/api/drafts`
   - `/api/drafts/:id`
   - `/api/drafts/publish`
-- 缺少 Worker variables、secrets、KV、D1、R2 bindings 时的 Setup Gate。
+- 缺少 Worker variables、secrets、KV、D1 bindings（以及 R2/KV 草稿图片存储都不存在）时的 Setup Gate。
 - 独立管理员登录页，内置管理员账号来自 Worker Secret `ADMIN_USERNAME` / `ADMIN_PASSWORD`。
 - 设置页账号管理，新增账号的密码以加盐哈希保存到 KV。
 - 设置页修改密码 / 重置密码：内置管理员的新密码写入 KV（secret 仍可恢复），普通账号原地更新盐和哈希。
@@ -422,7 +448,7 @@ ADMIN_INDEX_PATH=/admin-index.json
 - 通过 GitHub REST API 读取文章 Markdown。
 - 基于 D1 的草稿创建、保存、读取和删除。
 - 文章和草稿编辑时提供实时 Markdown 预览，并支持 `==高亮==` 语法。
-- 在 Markdown 编辑器中上传图片到 R2 临时缓存，自动插入最终 Markdown 图片路径。
-- 管理草稿图片缓存，支持查看和删除 R2 临时图片。
-- 发布草稿时，将 Markdown 和 R2 中的草稿图片一起提交到博客仓库。
+- 在 Markdown 编辑器中上传图片到草稿临时缓存（R2，未绑 R2 时用 KV），自动插入最终 Markdown 图片路径。
+- 管理草稿图片缓存，支持查看和删除临时图片。
+- 发布草稿时，将 Markdown 和草稿临时图片一起提交到博客仓库。
 - 将草稿通过 GitHub batch commit 发布到博客仓库。
